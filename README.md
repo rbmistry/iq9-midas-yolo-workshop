@@ -50,8 +50,10 @@ scripts/setup_iq9_workshop.sh               # install ROS/QIRP/QRB ROS dependenc
 scripts/prepare_demo_workspace.sh           # fetch PR #429 + qrb_ros_nn_inference PR #93, stage model, build overlay
 scripts/check_demo_prereqs.sh               # verify model, ROS packages, launch args, camera nodes
 scripts/detect_usb_camera.py                # pick the real USB capture node across /dev/video* enumeration changes
-scripts/iq9_web_dashboard.py                # live camera/depth/overlay dashboard
+scripts/iq9_web_dashboard.py                # live camera/depth/overlay dashboard with FPS/CPU performance panel
 scripts/run_usb_demo.sh                     # launch the USB-camera demo plus browser web viewer
+scripts/run_csi_demo.sh                     # launch the on-board MIPI CSI camera demo plus browser web viewer
+scripts/csi_image_convert.py                # software nv12->bgr8 converter for the CSI camera's raw stream
 ```
 
 No slide/runbook docs are included in this attendee repo.
@@ -131,6 +133,49 @@ WEB_VIEWER_TOPIC=/midas_yolo_overlay ./scripts/run_usb_demo.sh # change the over
 WEB_VIEWER_QOS_PROFILE=default ./scripts/run_usb_demo.sh       # change stream QoS query
 ./scripts/run_usb_demo.sh score_thresh:=0.25                    # override YOLO score threshold
 ```
+
+## Running the demo with the on-board MIPI CSI camera
+
+The IQ9 EVK also exposes an on-board MIPI CSI camera (Sony IMX577) through the Qualcomm camera stack (`cam-server.service` + `qrb_ros_camera`), separate from any USB webcam. Use it instead of `run_usb_demo.sh` when a CSI camera module is attached:
+
+```bash
+./scripts/run_csi_demo.sh
+```
+
+Confirm the CSI camera is recognized before launching:
+
+```bash
+sudo systemctl status cam-server            # should be "active (running)"
+sudo dmesg | grep -i cam_sensor_match_id    # should report the sensor id/name, e.g. cmk_imx577
+```
+
+`run_csi_demo.sh` mirrors `run_usb_demo.sh`'s behavior (ROS/overlay sourcing, YOLO score-threshold default of `0.5`, `web_video_server`, and the IQ9 dashboard website), but runs `ros2 launch sample_midas_yolo_parallel launch_with_qrb_ros_camera.py` instead. That launch file composes the `qrb_ros_camera::CameraNode` directly into the same component container as the inference and fusion nodes, publishing the raw feed on `/cam0_stream1` at 640x480/30fps.
+
+The CSI camera publishes in `nv12` pixel format, which `web_video_server`'s `cv_bridge`-based MJPEG streamer cannot decode directly (you would otherwise see `cv_bridge exception: Unrecognized image encoding [nv12]` in its log and a blank camera panel). `run_csi_demo.sh` therefore also starts `scripts/csi_image_convert.py`, a small stdlib + OpenCV node that republishes a software-converted `bgr8` copy on `/cam0_stream1_rgb`; the dashboard's camera panel watches that topic by default. Qualcomm's own `qrb_ros_colorspace_convert` package does the same conversion on the GPU via EGL, but requires a running Wayland/X compositor (`weston`) that isn't normally active on a headless/browser-only workshop board, so this project uses the dependency-free CPU path instead.
+
+```bash
+./scripts/run_csi_demo.sh score_thresh:=0.25   # override YOLO score threshold, same as the USB path
+```
+
+The same `WEB_VIEWER`, `WEB_DASHBOARD_PORT`, `WEB_VIEWER_PORT`, `WEB_DEPTH_TOPIC`, `WEB_VIEWER_TOPIC`, and QoS override environment variables documented above for `run_usb_demo.sh` apply to `run_csi_demo.sh` as well.
+
+If the stream appears slow, check for a stale camera process left over from a prior run before assuming a hardware or model issue — a leaked capture node competing for the same camera/CPU resources is a common and easy-to-miss cause of degraded frame rate:
+
+```bash
+ps aux | grep -E 'usb_cam|csi_image_convert|ros2 launch|component_container'
+# kill any PID from a demo you believed had already exited, then re-launch
+```
+
+## Live performance panel (FPS / CPU)
+
+Both `run_usb_demo.sh` and `run_csi_demo.sh` start the dashboard with a live performance strip showing overall system CPU utilization in the header, plus a real measured FPS value overlaid on each of the three stream panels (camera / depth / overlay). The dashboard's own JavaScript polls a `/stats.json` endpoint once per second:
+
+```bash
+curl http://<IQ9_LAN_IP>:8081/stats.json
+# {"fps": {"camera": 30.0, "depth": 29.8, "overlay": 7.2}, "cpu_percent": 30.1}
+```
+
+FPS is computed from real ROS topic arrival timestamps (not read from a static camera config), so it reflects whatever the pipeline is actually delivering right now, including any slowdown from a loaded system or a leaked background process. CPU utilization is read from `/proc/stat` (no new dependency). Both run in lightweight background threads inside `iq9_web_dashboard.py`; add `--no-stats` to the dashboard's arguments (or edit the launch script) to disable the panel and skip starting `rclpy` in the dashboard process entirely.
 
 ## What attendees do vs what scripts hide
 
