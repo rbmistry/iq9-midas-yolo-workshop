@@ -52,6 +52,7 @@ scripts/check_demo_prereqs.sh               # verify model, ROS packages, launch
 scripts/detect_usb_camera.py                # pick the real USB capture node across /dev/video* enumeration changes
 scripts/iq9_web_dashboard.py                # live camera/depth/overlay dashboard
 scripts/run_usb_demo.sh                     # launch the USB-camera demo plus browser web viewer
+scripts/run_csi_demo.sh                     # launch the on-board MIPI CSI camera demo plus browser web viewer
 ```
 
 No slide/runbook docs are included in this attendee repo.
@@ -130,6 +131,36 @@ WEB_DEPTH_TOPIC=/midas_depth_gray ./scripts/run_usb_demo.sh    # change the dept
 WEB_VIEWER_TOPIC=/midas_yolo_overlay ./scripts/run_usb_demo.sh # change the overlay panel topic
 WEB_VIEWER_QOS_PROFILE=default ./scripts/run_usb_demo.sh       # change stream QoS query
 ./scripts/run_usb_demo.sh score_thresh:=0.25                    # override YOLO score threshold
+```
+
+## Running the demo with the on-board MIPI CSI camera
+
+The IQ9 EVK also exposes an on-board MIPI CSI camera (Sony IMX577) through the Qualcomm camera stack (`cam-server.service` + `qrb_ros_camera`), separate from any USB webcam. Use it instead of `run_usb_demo.sh` when a CSI camera module is attached:
+
+```bash
+./scripts/run_csi_demo.sh
+```
+
+Confirm the CSI camera is recognized before launching:
+
+```bash
+sudo systemctl status cam-server            # should be "active (running)"
+sudo dmesg | grep -i cam_sensor_match_id    # should report the sensor id/name, e.g. cmk_imx577
+```
+
+`run_csi_demo.sh` is a thin wrapper, mirroring `run_usb_demo.sh`'s behavior (ROS/overlay sourcing, YOLO score-threshold default of `0.5`, `web_video_server`, and the IQ9 dashboard website), but runs `ros2 launch sample_midas_yolo_parallel launch_with_qrb_ros_camera.py` instead. That launch file composes the `qrb_ros_camera::CameraNode` directly into the same component container as the inference and fusion nodes, publishing the raw feed on `/cam0_stream1` (not `/image_raw`) at 640x480/30fps. The dashboard is pre-wired to this topic by default (`WEB_CAMERA_TOPIC=/cam0_stream1`), so no manual override is required:
+
+```bash
+./scripts/run_csi_demo.sh score_thresh:=0.25   # override YOLO score threshold, same as the USB path
+```
+
+The same `WEB_VIEWER`, `WEB_DASHBOARD_PORT`, `WEB_VIEWER_PORT`, `WEB_DEPTH_TOPIC`, `WEB_VIEWER_TOPIC`, and QoS override environment variables documented above for `run_usb_demo.sh` apply to `run_csi_demo.sh` as well.
+
+If the stream appears slow, check for a stale camera process left over from a prior run before assuming a hardware or model issue — a leaked capture node competing for the same camera/CPU resources is a common and easy-to-miss cause of degraded frame rate:
+
+```bash
+ps aux | grep -E 'usb_cam|ros2 launch|component_container'
+# kill any PID from a demo you believed had already exited, then re-launch
 ```
 
 ## What attendees do vs what scripts hide
