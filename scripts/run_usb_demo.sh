@@ -112,6 +112,7 @@ start_web_dashboard() {
 
   viewer_host=$(first_lan_address)
   echo "IQ9 live dashboard: http://$viewer_host:$WEB_DASHBOARD_PORT/"
+  echo "IQ9 overview page:  http://$viewer_host:$WEB_DASHBOARD_PORT/overview"
   echo "Dashboard log: $WEB_DASHBOARD_LOG"
 }
 
